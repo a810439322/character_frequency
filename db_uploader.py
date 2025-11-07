@@ -294,6 +294,87 @@ def upload_to_database(conn, data):
         return False
 
 
+def update_database(conn, data):
+    """
+    更新数据库中的统计数据
+
+    Args:
+        conn: 数据库连接
+        data: 统计数据字典
+
+    Returns:
+        bool: 更新成功返回True
+    """
+    try:
+        cursor = conn.cursor()
+
+        # 更新数据
+        sql = """
+        UPDATE book_difficulty SET
+            char_types = %s,
+            char_types_in_1500 = %s,
+            char_types_out_1500 = %s,
+            coverage_500 = %s,
+            coverage_1000 = %s,
+            coverage_1500 = %s,
+            avg_order_95 = %s,
+            avg_order_99 = %s,
+            chars_95 = %s,
+            chars_99 = %s,
+            chars_95_in_1500 = %s,
+            chars_95_out_1500 = %s,
+            chars_99_in_1500 = %s,
+            chars_99_out_1500 = %s,
+            difficulty_score = %s,
+            star_level = %s,
+            file_name = %s,
+            total_chars = %s,
+            rare_char_types = %s,
+            rare_char_ratio = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE book_name = %s AND (author = %s OR (author IS NULL AND %s IS NULL))
+        """
+
+        values = (
+            data['char_types'],
+            data['char_types_in_1500'],
+            data['char_types_out_1500'],
+            data['coverage_500'],
+            data['coverage_1000'],
+            data['coverage_1500'],
+            data['avg_order_95'],
+            data['avg_order_99'],
+            data['chars_95'],
+            data['chars_99'],
+            data['chars_95_in_1500'],
+            data['chars_95_out_1500'],
+            data['chars_99_in_1500'],
+            data['chars_99_out_1500'],
+            data['difficulty_score'],
+            data['star_level'],
+            data['file_name'],
+            data['total_chars'],
+            data['rare_char_types'],
+            data['rare_char_ratio'],
+            data['book_name'],
+            data['author'],
+            data['author']
+        )
+
+        cursor.execute(sql, values)
+        conn.commit()
+
+        affected_rows = cursor.rowcount
+        cursor.close()
+
+        print(f"  ✓ 已更新: {data['book_name']}" + (f" ({data['author']})" if data['author'] else "") + f" [影响行数: {affected_rows}]")
+        return True
+
+    except Exception as e:
+        print(f"  ✗ 更新失败: {e}")
+        return False
+
+
 def prepare_upload_data(
     book_name, author, selected_file, total_chars, char_counter, coverage_stats,
     avg_order_95, avg_order_99, chars_95, chars_99, chars_95_in_ref, chars_95_out_ref,
@@ -402,10 +483,22 @@ def handle_database_upload(
             author = input("请输入作者（留空跳过）: ").strip() or None
 
     # 查重
-    if check_book_exists(db_conn, book_name, author):
-        if not batch_mode:
+    book_exists = check_book_exists(db_conn, book_name, author)
+
+    if book_exists:
+        if batch_mode:
+            # 批量模式：跳过已存在的记录
+            return False, db_conn if not need_close else None
+        else:
+            # 单文件模式：询问是否覆盖
             print(f"\n⚠ 数据库中已存在: {book_name}" + (f" ({author})" if author else ""))
-        return False, db_conn if not need_close else None
+            overwrite = input("是否覆盖更新？(y=是, n=跳过) [默认:n，直接回车跳过]: ").strip().lower()
+            if overwrite == '':
+                overwrite = 'n'  # 默认不覆盖
+            if overwrite != 'y':
+                if need_close:
+                    db_conn.close()
+                return False, None
 
     # 单文件模式：显示识别结果，允许修改
     if not batch_mode:
@@ -432,11 +525,18 @@ def handle_database_upload(
             author = input("请输入作者（留空跳过）: ").strip() or None
 
             # 再次查重
-            if check_book_exists(db_conn, book_name, author):
-                print(f"数据库中已存在该记录，跳过上传")
-                if need_close:
-                    db_conn.close()
-                return False, None
+            book_exists_again = check_book_exists(db_conn, book_name, author)
+            if book_exists_again:
+                print(f"\n⚠ 数据库中已存在: {book_name}" + (f" ({author})" if author else ""))
+                overwrite = input("是否覆盖更新？(y=是, n=跳过) [默认:n，直接回车跳过]: ").strip().lower()
+                if overwrite == '':
+                    overwrite = 'n'  # 默认不覆盖
+                if overwrite != 'y':
+                    if need_close:
+                        db_conn.close()
+                    return False, None
+                # 标记需要更新
+                book_exists = True
 
     # 准备数据
     data = prepare_upload_data(
@@ -445,8 +545,19 @@ def handle_database_upload(
         chars_99_in_ref, chars_99_out_ref, extra_char_types, difficulty_score, stars, rare_analysis
     )
 
-    # 上传
-    success = upload_to_database(db_conn, data)
+    # 检查字数是否达到最低要求（300字）
+    if total_chars < 300:
+        if not batch_mode:
+            print(f"\n⚠ 字数过少（{total_chars}字），需要至少300字才能上传数据库")
+        if need_close:
+            db_conn.close()
+        return False, None if need_close else db_conn
+
+    # 上传或更新
+    if book_exists:
+        success = update_database(db_conn, data)
+    else:
+        success = upload_to_database(db_conn, data)
 
     # 关闭连接（如果是自己创建的）
     if need_close:
