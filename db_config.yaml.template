@@ -1,0 +1,21 @@
+# 数据库配置文件模板
+# 使用说明：
+# 1. 将此文件复制为 db_config.yaml
+# 2. 修改下方的数据库连接信息
+# 3. 确保数据库已创建（使用 create_table.sql）
+# 4. 重新运行程序即可自动检测并启用数据库功能
+
+# MySQL数据库连接配置
+mysql:
+  host: 'localhost'          # 数据库服务器地址
+  port: 3306                 # 数据库端口
+  user: 'your_username'      # 数据库用户名（请修改）
+  password: 'your_password'  # 数据库密码（请修改）
+  database: 'your_database'  # 数据库名称（请修改）
+  charset: 'utf8mb4'         # 字符集
+
+# 注意事项：
+# - 请妥善保管 db_config.yaml，不要泄露给他人
+# - 确保已使用 create_table.sql 创建表结构
+# - 确保已安装依赖：pip install pymysql pyyaml
+# - 程序会自动检测配置有效性（是否已填写真实信息）

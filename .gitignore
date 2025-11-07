@@ -1,0 +1,39 @@
+# 忽略所有目录
+__pycache__/
+books/
+dist/
+编码转换备份/
+/*/雨天难度结果/
+字频统计结果/
+.claude/
+
+# Python 编译文件
+*.pyc
+*.pyo
+*.pyd
+__pycache__
+
+# 配置文件（包含敏感信息）
+db_config.yaml
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 构建产物
+build/
+*.egg-info/
+*.egg
