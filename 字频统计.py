@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # author: 虎码新手2群-也无风雨也无晴
-"""
-字频统计脚本
-功能：统计txt文件中每个字的出现次数，并按照dict字序排序
-"""
+
+# 工具版本号
+TOOL_VERSION = "1.2"
 
 import os
 import sys
@@ -484,24 +483,56 @@ def detect_encoding(file_path):
         print(f"  编码检测: {detected_encoding.upper()} (中文比例: {valid_encodings[0][1]:.1%})")
         return detected_encoding
 
-    # 如果没有找到合适的编码，使用简单试错法
+    # 如果没有找到合适的编码，使用改进的试错法
     print("  编码检测: 使用试错法...")
     encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'big5', 'utf-16']
 
+    # 读取文件内容用于测试
+    try:
+        with open(file_path, 'rb') as f:
+            raw_data = f.read(102400)  # 读取100KB
+    except:
+        return None
+
+    best_encoding = None
+    best_score = 0
+
     for encoding in encodings:
         try:
-            with open(file_path, 'r', encoding=encoding) as f:
-                f.read(1024)
-                return encoding
+            # 尝试用errors='replace'解码，这样可以容忍轻微的编码错误
+            decoded = raw_data.decode(encoding, errors='replace')
+
+            # 统计成功解码的字符（非替换字符）
+            replacement_char = '\ufffd'  # 这是errors='replace'使用的替换字符
+            total_chars = len(decoded)
+            replacement_count = decoded.count(replacement_char)
+            success_rate = (total_chars - replacement_count) / total_chars if total_chars > 0 else 0
+
+            # 统计中文字符比例
+            chinese_count = sum(1 for c in decoded if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
+            chinese_ratio = chinese_count / total_chars if total_chars > 0 else 0
+
+            # 综合评分：成功率 * 0.6 + 中文比例 * 0.4
+            score = success_rate * 0.6 + chinese_ratio * 0.4
+
+            # 只接受成功率>95%且中文比例>30%的编码
+            if success_rate > 0.95 and chinese_ratio > 0.3 and score > best_score:
+                best_encoding = encoding
+                best_score = score
+
         except (UnicodeDecodeError, UnicodeError):
             continue
+
+    if best_encoding:
+        print(f"  编码检测: {best_encoding.upper()} (置信度: {best_score:.0%})")
+        return best_encoding
 
     # 如果所有编码都失败，返回None
     return None
 
 
 def count_chars(file_path):
-    """统计文件中每个字的出现次数，自动检测编码"""
+    """统计文件中每个字的出现次数，自动检测编码和繁简体"""
     print("\n正在检测文件编码...")
 
     # 先检测编码
@@ -517,17 +548,70 @@ def count_chars(file_path):
         with open(file_path, 'r', encoding=detected_encoding, errors='ignore') as f:
             content = f.read()
 
-        # 统计中文字符（包括基本汉字和CJK扩展区）
-        # 基本汉字区: U+4E00-U+9FFF
-        # CJK扩展A区: U+3400-U+4DBF
-        # CJK扩展B-F区: U+20000-U+2EBEF
+        # 提取中文字符并统计
         chinese_chars = [
             char for char in content
             if ('\u4e00' <= char <= '\u9fff') or  # 基本汉字
                ('\u3400' <= char <= '\u4dbf') or  # 扩展A区
                ('\U00020000' <= char <= '\U0002ebef')  # 扩展B-F区
         ]
-        return Counter(chinese_chars), detected_encoding
+        char_counter = Counter(chinese_chars)
+
+        # 如果没有中文字符，直接返回
+        if len(char_counter) == 0:
+            return char_counter, detected_encoding
+
+        # 检测繁简体：用统计出的字种判断
+        print("正在检测繁简体...")
+        try:
+            import zhconv
+
+            # 定义繁简对照表（常用特征字）
+            TRAD_SIMP_PAIRS = {
+                '為': '为', '無': '无', '來': '来', '會': '会', '學': '学', '國': '国',
+                '過': '过', '時': '时', '間': '间', '現': '现', '說': '说', '個': '个',
+                '這': '这', '還': '还', '開': '开', '關': '关', '東': '东', '當': '当',
+                '對': '对', '們': '们', '應': '应', '處': '处', '業': '业', '進': '进',
+                '種': '种', '將': '将', '產': '产', '電': '电', '機': '机', '實': '实',
+                '發': '发', '題': '题', '經': '经', '體': '体', '點': '点', '從': '从',
+                '見': '见', '動': '动', '問': '问', '長': '长', '認': '认', '與': '与',
+                '後': '后', '萬': '万', '傳': '传', '車': '车', '書': '书', '買': '买',
+                '賣': '卖', '變': '变', '戰': '战', '讓': '让', '嘗': '尝', '試': '试',
+                '導': '导', '確': '确', '熱': '热', '環': '环', '雙': '双', '離': '离',
+                '難': '难', '歷': '历', '場': '场', '聽': '听', '選': '选', '識': '识',
+                '總': '总', '條': '条', '運': '运', '農': '农', '議': '议', '團': '团',
+            }
+
+            # 统计字种中繁简特征字的数量
+            trad_count = sum(1 for c in char_counter.keys() if c in TRAD_SIMP_PAIRS)
+            simp_count = sum(1 for c in char_counter.keys() if c in TRAD_SIMP_PAIRS.values())
+
+            # 判断：繁体特征 > 简体特征 × 3
+            is_traditional = trad_count > simp_count * 3 and trad_count > 10
+
+            if is_traditional:
+                print(f"✓ 检测到繁体文本（繁体特征字:{trad_count}个 > 简体:{simp_count}个）")
+                print(f"  正在转换字种为简体...")
+                # 转换字种：把 Counter 的 key 从繁体转为简体
+                new_counter = Counter()
+                for char, count in char_counter.items():
+                    simplified_char = zhconv.convert(char, 'zh-cn')
+                    new_counter[simplified_char] += count
+
+                char_counter = new_counter
+                print(f"✓ 转换完成，已将字种转为简体")
+            else:
+                print(f"✓ 检测到简体文本（繁体特征:{trad_count}个, 简体特征:{simp_count}个）")
+
+        except ImportError:
+            print("⚠ 未安装 zhconv，跳过繁简体检测")
+            print("  提示：安装 zhconv 可自动处理繁体书籍")
+            print("  安装命令: pip install zhconv")
+        except Exception as e:
+            print(f"⚠ 繁简体检测出错，按原文统计: {e}")
+
+        return char_counter, detected_encoding
+
     except Exception as e:
         print(f"✗ 读取文件失败: {e}")
         return Counter(), None
@@ -580,6 +664,102 @@ def load_common_chars(reference_chars=None, char_order=None):
         print(f"加载常用字表失败（尝试了{len(encodings)}种编码）")
 
     return common_chars
+
+
+def precompute_reference_sets(reference_chars, char_order, stats_ranges):
+    """
+    【性能优化】预计算所有需要的参考字表集合
+
+    只计算一次，避免重复排序和遍历，大幅提升批量处理性能。
+
+    时间复杂度：O(m log m) 一次性成本
+    vs 原先：O(n × m log m) n=stats_ranges数量
+
+    Args:
+        reference_chars: 前1500字列表（来自前1500.txt）
+        char_order: 字典序映射 {char: order}
+        stats_ranges: 需要计算的区间列表 [10, 50, 100, ...]
+
+    Returns:
+        dict: {区间: set(字符集合)} 例如 {500: set('的一是...')}
+
+    线程安全性：返回的所有set都是只读的，可安全共享
+    """
+    reference_sets_cache = {}
+
+    if not reference_chars or len(reference_chars) == 0:
+        # 回退方案：全部使用dict_simple.txt
+        for top_n in stats_ranges:
+            ref_set = {char for char, order in char_order.items() if order <= top_n}
+            reference_sets_cache[top_n] = ref_set
+        return reference_sets_cache
+
+    # 【关键优化】预排序char_order（只排序一次！）
+    # 避免每次calculate_coverage_stats都重复排序
+    sorted_char_order = sorted(char_order.items(), key=lambda x: x[1])
+    reference_chars_set = set(reference_chars)
+
+    # 按区间从小到大处理（可以复用部分结果）
+    for top_n in sorted(stats_ranges):
+        ref_top_chars = set()
+
+        if top_n <= len(reference_chars):
+            # 直接从前1500.txt取前N个
+            ref_top_chars = set(reference_chars[:top_n])
+        else:
+            # 前1500 + 从dict_simple.txt补充
+            ref_top_chars = set(reference_chars)  # 复制全部1500个
+            remaining_needed = top_n - len(reference_chars)
+            added_count = 0
+
+            # 使用预排序的结果，不再重复排序
+            for char, order in sorted_char_order:
+                if char not in reference_chars_set:
+                    ref_top_chars.add(char)
+                    added_count += 1
+                    if added_count >= remaining_needed:
+                        break
+
+        # 存储为不可变frozenset（更安全，明确表示只读）
+        reference_sets_cache[top_n] = frozenset(ref_top_chars)
+
+    return reference_sets_cache
+
+
+def calculate_coverage_stats_optimized(top_n, reference_sets_cache, char_counter, total_chars):
+    """
+    【性能优化】使用预计算集合的覆盖率计算函数
+
+    直接使用预计算的字符集合，避免每次都重新排序char_order。
+
+    时间复杂度：O(k) k=ref_top_chars大小
+    vs 原先：O(m log m + k) m=char_order大小
+
+    Args:
+        top_n: 区间大小（如500, 1000）
+        reference_sets_cache: 预计算的字符集合缓存
+        char_counter: 当前文件的字频统计 Counter对象
+        total_chars: 总字符数
+
+    Returns:
+        dict: {'actual_n', 'coverage', 'avg_count', 'total_count'}
+
+    线程安全性：不修改任何共享数据，仅读取
+    """
+    ref_top_chars = reference_sets_cache.get(top_n, frozenset())
+
+    # 【优化】使用sum和生成器表达式，比循环更高效
+    top_count = sum(char_counter.get(char, 0) for char in ref_top_chars)
+
+    coverage = (top_count / total_chars) * 100 if total_chars > 0 else 0
+    avg_count = top_count / len(ref_top_chars) if len(ref_top_chars) > 0 else 0
+
+    return {
+        'actual_n': len(ref_top_chars),
+        'coverage': coverage,
+        'avg_count': avg_count,
+        'total_count': top_count
+    }
 
 
 def analyze_rare_chars(char_counter, common_chars):
@@ -1355,23 +1535,93 @@ def feature_book_statistics():
 
                 print(f"找到 {len(files_to_process)} 个文件需要统计\n")
 
+                # 【性能优化】批量模式：预加载共享数据，避免每个文件重复加载
+                print("=" * 70)
+                print("【性能优化】正在预加载共享参考数据...")
+                print("=" * 70)
+
+                # 加载前1500字表
+                print("  ⏳ 加载前1500.txt...")
+                shared_reference_chars = load_reference_chars()
+                if shared_reference_chars:
+                    print(f"  ✓ 已加载 {len(shared_reference_chars)} 个参考字")
+                else:
+                    print("  ⚠ 未找到前1500.txt，将使用dict_simple.txt")
+
+                # 加载字典序
+                print("  ⏳ 加载dict_simple.txt...")
+                shared_char_order = load_dict_order()
+                print(f"  ✓ 已加载 {len(shared_char_order)} 个字的字典序")
+
+                # 加载常用字集合
+                print("  ⏳ 构建常用字集合...")
+                shared_common_chars = load_common_chars(shared_reference_chars, shared_char_order)
+                print(f"  ✓ 已构建 {len(shared_common_chars)} 个常用字集合")
+
+                # 【关键优化】预计算所有区间的参考字表集合
+                print("  ⏳ 预计算参考字表集合（这是性能提升的关键）...")
+                stats_ranges = [10, 50, 100, 500, 1000, 1500, 2000, 3000, 5000]
+                shared_reference_sets = precompute_reference_sets(
+                    shared_reference_chars, shared_char_order, stats_ranges
+                )
+                print(f"  ✓ 已预计算 {len(stats_ranges)} 个区间的字表集合")
+
+                print("=" * 70)
+                print("✓ 共享数据加载完成！批量处理将大幅提速")
+                print("=" * 70)
+                print()
+
+                # 【性能监控】记录批量处理开始时间
+                import time
+                batch_start_time = time.time()
+
                 # 初始化数据库连接（批量模式）
                 db_conn = None
                 db_config = None
+                existing_books = None  # 【批量优化】已存在书籍缓存
+                pending_inserts = []   # 【批量优化】待插入列表
+                pending_updates = []   # 【批量优化】待更新列表
+                batch_threshold = 10   # 【批量优化】批量阈值：每积累10条数据执行一次SQL
+
                 if DB_UPLOAD_AVAILABLE:
                     try:
-                        from db_uploader import load_db_config, check_db_connection, is_db_config_valid
+                        from db_uploader import load_db_config, check_db_connection, is_db_config_valid, load_existing_books, batch_insert_books, batch_update_books
                         db_config = load_db_config()
                         if db_config and is_db_config_valid(db_config):
                             success, db_conn = check_db_connection(db_config)
                             if success:
-                                print("✓ 数据库连接成功，批量上传模式已启用\n")
+                                print("✓ 数据库连接成功，批量上传模式已启用")
+                                # 【批量优化】预加载已存在的书籍列表
+                                print("  ⏳ 正在加载已存在书籍列表...")
+                                existing_books = load_existing_books(db_conn)
+                                print(f"  ✓ 已加载 {len(existing_books)} 本书籍缓存\n")
                             else:
                                 print("⚠ 数据库连接失败，将跳过数据库上传\n")
                         else:
                             print("⚠ 数据库配置未填写，将跳过数据库上传\n")
                     except Exception as e:
                         print(f"⚠ 数据库初始化失败: {e}，将跳过数据库上传\n")
+
+                # 定义批量提交函数
+                def flush_pending_data():
+                    """【批量优化】提交待处理的数据到数据库"""
+                    nonlocal pending_inserts, pending_updates
+                    insert_count = 0
+                    update_count = 0
+
+                    if pending_inserts:
+                        insert_count = batch_insert_books(db_conn, pending_inserts)
+                        if insert_count > 0:
+                            print(f"    ✓ 批量插入 {insert_count} 条记录")
+                        pending_inserts = []
+
+                    if pending_updates:
+                        update_count = batch_update_books(db_conn, pending_updates)
+                        if update_count > 0:
+                            print(f"    ✓ 批量更新 {update_count} 条记录")
+                        pending_updates = []
+
+                    return insert_count + update_count
 
                 # 存储所有书籍的统计结果用于汇总
                 summary_results = []
@@ -1383,39 +1633,83 @@ def feature_book_statistics():
                     print(f"\n{'='*70}")
                     print(f"[{idx}/{len(files_to_process)}] 正在处理: {display_name}")
                     print("-" * 70)
-                    result = process_file(file_path, batch_mode=True, db_conn=db_conn, db_config=db_config)
+
+                    # 【性能优化】传递共享数据给process_file
+                    result = process_file(
+                        file_path,
+                        batch_mode=True,
+                        db_conn=db_conn,
+                        db_config=db_config,
+                        existing_books=existing_books,  # 【批量优化】传递缓存
+                        shared_reference_chars=shared_reference_chars,
+                        shared_char_order=shared_char_order,
+                        shared_common_chars=shared_common_chars,
+                        shared_reference_sets=shared_reference_sets
+                    )
                     if result:
                         summary_results.append(result)
+
+                        # 【批量优化】处理数据库上传数据
+                        if 'db_prepared_data' in result and result['db_prepared_data']:
+                            if result['db_is_update']:
+                                pending_updates.append(result['db_prepared_data'])
+                            else:
+                                pending_inserts.append(result['db_prepared_data'])
+
                         # 更新数据库连接（可能在process_file中被更新）
                         if 'db_conn' in result and result['db_conn'] is not None:
                             db_conn = result['db_conn']
+
                         # 统计上传情况
                         upload_status = ""
                         if 'upload_success' in result:
                             if result['upload_success']:
                                 upload_success_count += 1
-                                upload_status = " | 已上传数据库"
+                                upload_status = " | 准备上传"
                             else:
                                 upload_skip_count += 1
-                                upload_status = " | 未上传数据库"
+                                upload_status = " | 跳过上传"
 
                         # 打印完成信息
                         print(f"✓ [{idx}/{len(files_to_process)}] 完成: {display_name} (字种数: {result['char_type_count']}, 难度: {result['difficulty_score']:.1f}分{upload_status})")
+
+                        # 【批量优化】达到批量阈值时，批量提交
+                        total_pending = len(pending_inserts) + len(pending_updates)
+                        if total_pending >= batch_threshold and db_conn:
+                            print(f"\n  【批量提交】已积累 {total_pending} 条数据，开始批量处理...")
+                            affected = flush_pending_data()
+                            if affected > 0:
+                                print(f"  【批量提交】成功处理 {affected} 条记录\n")
                     else:
                         print(f"✗ [{idx}/{len(files_to_process)}] 失败: {display_name}")
                     print("="*70)
+
+                # 【批量优化】处理剩余的待提交数据
+                if db_conn and (pending_inserts or pending_updates):
+                    total_pending = len(pending_inserts) + len(pending_updates)
+                    print(f"\n{'='*70}")
+                    print(f"【最终批量提交】处理剩余 {total_pending} 条数据...")
+                    print("="*70)
+                    affected = flush_pending_data()
+                    if affected > 0:
+                        print(f"✓ 成功处理 {affected} 条记录\n")
 
                 # 关闭数据库连接
                 if db_conn:
                     try:
                         db_conn.close()
-                        print("\n✓ 数据库连接已关闭")
+                        print("✓ 数据库连接已关闭\n")
                     except:
                         pass
 
                 # 生成汇总报告
                 if summary_results:
                     generate_summary_report(summary_results)
+
+                # 【性能监控】计算并显示批量处理性能统计
+                batch_end_time = time.time()
+                total_time = batch_end_time - batch_start_time
+                avg_time_per_file = total_time / len(files_to_process) if len(files_to_process) > 0 else 0
 
                 print("\n" + "=" * 70)
                 print("批量扫描完成！")
@@ -1424,6 +1718,12 @@ def feature_book_statistics():
                 # 如果数据库连接成功过，显示上传统计
                 if DB_UPLOAD_AVAILABLE and (upload_success_count > 0 or upload_skip_count > 0):
                     print(f"数据库上传: 成功 {upload_success_count} 个，跳过 {upload_skip_count} 个")
+                print("-" * 70)
+                print("【性能统计】")
+                print(f"  总耗时: {total_time:.2f} 秒")
+                print(f"  平均每本: {avg_time_per_file:.2f} 秒")
+                if len(files_to_process) > 0:
+                    print(f"  处理速度: {3600/avg_time_per_file:.1f} 本/小时")
                 print("=" * 70)
                 input("\n按回车键返回主菜单...")
                 return
@@ -1445,6 +1745,7 @@ def feature_book_statistics():
 def main():
     print("=" * 50)
     print("字频统计工具")
+    print(f"版本: {TOOL_VERSION}")
     print("=" * 50)
 
     # 0. 确保输出文件夹存在
@@ -1498,7 +1799,9 @@ def main():
             print("\n无效选择，请输入0-9之间的数字")
 
 
-def process_file(selected_file, batch_mode=False, db_conn=None, db_config=None):
+def process_file(selected_file, batch_mode=False, db_conn=None, db_config=None, existing_books=None,
+                 shared_reference_chars=None, shared_char_order=None,
+                 shared_common_chars=None, shared_reference_sets=None):
     """处理单个文件的统计
 
     Args:
@@ -1506,6 +1809,13 @@ def process_file(selected_file, batch_mode=False, db_conn=None, db_config=None):
         batch_mode: 是否批量模式（True时自动上传，不询问确认）
         db_conn: 复用的数据库连接（批量模式用）
         db_config: 数据库配置（批量模式用）
+        existing_books: 【批量优化】已存在书籍缓存 {(book_name, author): book_id}
+        shared_reference_chars: 【性能优化】共享的前1500字列表（避免重复加载）
+        shared_char_order: 【性能优化】共享的字典序映射（避免重复加载）
+        shared_common_chars: 【性能优化】共享的常用字集合（避免重复加载）
+        shared_reference_sets: 【性能优化】预计算的参考字表集合（避免重复计算）
+
+    线程安全性：所有shared_*参数都是只读的，不会被修改
     """
     print(f"\n正在统计文件: {selected_file}")
 
@@ -1520,17 +1830,27 @@ def process_file(selected_file, batch_mode=False, db_conn=None, db_config=None):
     print(f"共统计到 {total_chars} 个中文字符")
     print(f"不重复字符数: {len(char_counter)}")
 
-    # 5. 加载参考字表和字序
-    print("\n正在加载参考字表（前1500.txt）...")
-    reference_chars = load_reference_chars()
-    if reference_chars:
-        print(f"加载了参考字表，共 {len(reference_chars)} 个字")
+    # 【性能优化】5. 加载参考字表和字序 - 优先使用共享数据
+    if shared_reference_chars is not None:
+        reference_chars = shared_reference_chars
+        if not batch_mode:  # 非批量模式才打印（避免刷屏）
+            print(f"\n使用共享参考字表（前1500.txt），共 {len(reference_chars)} 个字")
     else:
-        print("使用dict_simple.txt作为替代")
+        print("\n正在加载参考字表（前1500.txt）...")
+        reference_chars = load_reference_chars()
+        if reference_chars:
+            print(f"加载了参考字表，共 {len(reference_chars)} 个字")
+        else:
+            print("使用dict_simple.txt作为替代")
 
-    print("正在加载dict.yaml...")
-    char_order = load_dict_order()
-    print(f"加载了 {len(char_order)} 个字的顺序")
+    if shared_char_order is not None:
+        char_order = shared_char_order
+        if not batch_mode:
+            print(f"使用共享字典序，共 {len(char_order)} 个字的顺序")
+    else:
+        print("正在加载dict.yaml...")
+        char_order = load_dict_order()
+        print(f"加载了 {len(char_order)} 个字的顺序")
 
     # 6. 排序：按照dict.yaml的顺序排序
     # 在dict.yaml中的字按顺序排列，不在的字放在最后按出现次数降序排列
@@ -1552,84 +1872,58 @@ def process_file(selected_file, batch_mode=False, db_conn=None, db_config=None):
     # 按出现次数降序排列所有字符（用于计算累积覆盖率）
     all_chars_by_freq = sorted(char_counter.items(), key=lambda x: x[1], reverse=True)
 
-    def calculate_coverage_stats(top_n):
-        """
-        计算参考字表前N个字的覆盖率
-        - 前1500字：优先使用前1500.txt
-        - 超过1500的部分：使用dict_simple.txt按字序补充
-        """
-        ref_top_chars = set()
-
-        if reference_chars and len(reference_chars) > 0:
-            # 前1500字使用前1500.txt
-            if top_n <= len(reference_chars):
-                ref_top_chars = set(reference_chars[:top_n])
-            else:
-                # 超过1500：前1500用reference_chars，剩余用dict_simple.txt补充
-                ref_top_chars = set(reference_chars)  # 先添加全部1500个
-                reference_chars_set = set(reference_chars)
-
-                # 从dict_simple.txt补充剩余的字（按字序，排除已在前1500中的字）
-                remaining_needed = top_n - len(reference_chars)
-                added_count = 0
-                for char, order in sorted(char_order.items(), key=lambda x: x[1]):
-                    if char not in reference_chars_set:
-                        ref_top_chars.add(char)
-                        added_count += 1
-                        if added_count >= remaining_needed:
-                            break
-        else:
-            # 回退方案：全部使用dict_simple.txt的字序
-            for char, order in char_order.items():
-                if order <= top_n:
-                    ref_top_chars.add(char)
-
-        # 计算这些字在文本中的出现次数
-        top_count = 0
-        for char in ref_top_chars:
-            if char in char_counter:
-                top_count += char_counter[char]
-
-        coverage = (top_count / total_chars) * 100 if total_chars > 0 else 0
-        avg_count = top_count / len(ref_top_chars) if len(ref_top_chars) > 0 else 0
-
-        return {
-            'actual_n': len(ref_top_chars),
-            'coverage': coverage,
-            'avg_count': avg_count,
-            'total_count': top_count
-        }
-
-    # 计算不同区间的统计
+    # 【性能优化】计算不同区间的统计 - 使用预计算的集合或现场计算
     stats_ranges = [10, 50, 100, 500, 1000, 1500, 2000, 3000, 5000]
     coverage_stats = {}
-    for n in stats_ranges:
-        coverage_stats[n] = calculate_coverage_stats(n)
 
-    # 计算累积覆盖率（覆盖X%的文本需要多少字）
+    if shared_reference_sets is not None:
+        # 批量模式：使用预计算的集合，避免重复排序
+        for n in stats_ranges:
+            coverage_stats[n] = calculate_coverage_stats_optimized(
+                n, shared_reference_sets, char_counter, total_chars
+            )
+    else:
+        # 单文件模式：现场计算（也比旧版快，因为用了优化的算法）
+        # 预计算一次参考集合
+        local_reference_sets = precompute_reference_sets(reference_chars, char_order, stats_ranges)
+        for n in stats_ranges:
+            coverage_stats[n] = calculate_coverage_stats_optimized(
+                n, local_reference_sets, char_counter, total_chars
+            )
+
+    # 【性能优化】计算累积覆盖率（覆盖X%的文本需要多少字）
+    # 使用标志位代替any()查找，从O(n²)优化到O(n)
     cumulative_coverage = []
     cumulative_count = 0
+    thresholds = {50: False, 80: False, 90: False, 95: False, 99: False}
+
     for idx, (char, count) in enumerate(all_chars_by_freq, start=1):
         cumulative_count += count
         coverage_pct = (cumulative_count / total_chars) * 100
-        if coverage_pct >= 50 and not any(c[0] == 50 for c in cumulative_coverage):
-            cumulative_coverage.append((50, idx, coverage_pct))
-        if coverage_pct >= 80 and not any(c[0] == 80 for c in cumulative_coverage):
-            cumulative_coverage.append((80, idx, coverage_pct))
-        if coverage_pct >= 90 and not any(c[0] == 90 for c in cumulative_coverage):
-            cumulative_coverage.append((90, idx, coverage_pct))
-        if coverage_pct >= 95 and not any(c[0] == 95 for c in cumulative_coverage):
-            cumulative_coverage.append((95, idx, coverage_pct))
-        if coverage_pct >= 99 and not any(c[0] == 99 for c in cumulative_coverage):
-            cumulative_coverage.append((99, idx, coverage_pct))
+
+        # O(1)检查和标记，避免重复的any()查找
+        for threshold in [50, 80, 90, 95, 99]:
+            if not thresholds[threshold] and coverage_pct >= threshold:
+                cumulative_coverage.append((threshold, idx, coverage_pct))
+                thresholds[threshold] = True
+
+        # 提前退出：所有阈值都找到了，无需继续遍历
+        if all(thresholds.values()):
+            break
 
     # 100%覆盖就是所有字种数
     cumulative_coverage.append((100, len(char_counter), 100.0))
 
     # 6.6 形码用户专属分析
-    print("\n正在加载常用字表...")
-    common_chars = load_common_chars(reference_chars, char_order)
-    print(f"加载了 {len(common_chars)} 个常用字")
+    # 【性能优化】优先使用共享的常用字集合
+    if shared_common_chars is not None:
+        common_chars = shared_common_chars
+        if not batch_mode:
+            print(f"使用共享常用字表，共 {len(common_chars)} 个常用字")
+    else:
+        print("\n正在加载常用字表...")
+        common_chars = load_common_chars(reference_chars, char_order)
+        print(f"加载了 {len(common_chars)} 个常用字")
 
     print("正在分析生僻字...")
     rare_analysis = analyze_rare_chars(char_counter, common_chars)
@@ -1991,23 +2285,46 @@ def process_file(selected_file, batch_mode=False, db_conn=None, db_config=None):
 
     # 数据库上传（可选功能）
     upload_success = False
+    db_prepared_data = None
+    db_is_update = False
+
     if DB_UPLOAD_AVAILABLE:
         try:
-            success, returned_conn = handle_database_upload(
-                base_filename, total_chars, char_counter, coverage_stats,
-                avg_order_95, avg_order_99, chars_95, chars_99,
-                chars_95_in_ref, chars_95_out_ref, chars_99_in_ref, chars_99_out_ref,
-                extra_char_types, difficulty_score, stars, rare_analysis,
-                batch_mode=batch_mode,
-                db_conn=db_conn,
-                db_config=db_config
-            )
-            upload_success = success
-            # 批量模式下，返回更新后的连接
-            if batch_mode and returned_conn is not None:
-                db_conn = returned_conn
+            if batch_mode:
+                # 【批量优化】批量模式：只准备数据，不执行SQL
+                success, returned_conn, prepared_data, is_update = handle_database_upload(
+                    base_filename, total_chars, char_counter, coverage_stats,
+                    avg_order_95, avg_order_99, chars_95, chars_99,
+                    chars_95_in_ref, chars_95_out_ref, chars_99_in_ref, chars_99_out_ref,
+                    extra_char_types, difficulty_score, stars, rare_analysis,
+                    tool_version=TOOL_VERSION,
+                    batch_mode=True,
+                    db_conn=db_conn,
+                    db_config=db_config,
+                    existing_books=existing_books  # 传递缓存
+                )
+                upload_success = success
+                db_prepared_data = prepared_data
+                db_is_update = is_update
+                if returned_conn is not None:
+                    db_conn = returned_conn
+            else:
+                # 单文件模式：立即执行SQL
+                success, returned_conn = handle_database_upload(
+                    base_filename, total_chars, char_counter, coverage_stats,
+                    avg_order_95, avg_order_99, chars_95, chars_99,
+                    chars_95_in_ref, chars_95_out_ref, chars_99_in_ref, chars_99_out_ref,
+                    extra_char_types, difficulty_score, stars, rare_analysis,
+                    tool_version=TOOL_VERSION,
+                    batch_mode=False,
+                    db_conn=db_conn,
+                    db_config=db_config
+                )
+                upload_success = success
+                if returned_conn is not None:
+                    db_conn = returned_conn
 
-            # 返回数据库连接供批量模式复用
+            # 返回数据库连接和准备好的数据
             return {
                 'filename': base_filename,
                 'total_chars': total_chars,
@@ -2024,9 +2341,12 @@ def process_file(selected_file, batch_mode=False, db_conn=None, db_config=None):
                 'avg_order_99': avg_order_99,
                 'difficulty_score': difficulty_score,
                 'stars': stars,
+                'tool_version': TOOL_VERSION,
                 'db_conn': db_conn,
                 'db_config': db_config,
-                'upload_success': upload_success
+                'upload_success': upload_success,
+                'db_prepared_data': db_prepared_data,  # 【批量优化】准备好的数据
+                'db_is_update': db_is_update  # 【批量优化】是否更新操作
             }
         except Exception as e:
             print(f"\n数据库上传出错（已跳过）: {e}")
@@ -2048,6 +2368,7 @@ def process_file(selected_file, batch_mode=False, db_conn=None, db_config=None):
         'avg_order_99': avg_order_99,
         'difficulty_score': difficulty_score,
         'stars': stars,
+        'tool_version': TOOL_VERSION,
         'upload_success': upload_success
     }
 

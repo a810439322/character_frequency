@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS book_difficulty (
     total_chars INT COMMENT '总字符数',
     rare_char_types INT COMMENT '生僻字字种数',
     rare_char_ratio DECIMAL(5,2) COMMENT '生僻字占比(%)',
+    tool_version VARCHAR(20) DEFAULT NULL COMMENT '工具版本号',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
 

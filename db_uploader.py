@@ -240,7 +240,8 @@ def upload_to_database(conn, data):
             chars_99_in_1500, chars_99_out_1500,
             difficulty_score, star_level,
             file_name, total_chars,
-            rare_char_types, rare_char_ratio
+            rare_char_types, rare_char_ratio,
+            tool_version
         ) VALUES (
             %s, %s, %s, %s, %s,
             %s, %s, %s,
@@ -250,7 +251,8 @@ def upload_to_database(conn, data):
             %s, %s,
             %s, %s,
             %s, %s,
-            %s, %s
+            %s, %s,
+            %s
         )
         """
 
@@ -276,7 +278,8 @@ def upload_to_database(conn, data):
             data['file_name'],
             data['total_chars'],
             data['rare_char_types'],
-            data['rare_char_ratio']
+            data['rare_char_ratio'],
+            data['tool_version']
         )
 
         cursor.execute(sql, values)
@@ -331,6 +334,7 @@ def update_database(conn, data):
             total_chars = %s,
             rare_char_types = %s,
             rare_char_ratio = %s,
+            tool_version = %s,
             updated_at = CURRENT_TIMESTAMP
         WHERE book_name = %s AND (author = %s OR (author IS NULL AND %s IS NULL))
         """
@@ -356,6 +360,7 @@ def update_database(conn, data):
             data['total_chars'],
             data['rare_char_types'],
             data['rare_char_ratio'],
+            data['tool_version'],
             data['book_name'],
             data['author'],
             data['author']
@@ -378,7 +383,8 @@ def update_database(conn, data):
 def prepare_upload_data(
     book_name, author, selected_file, total_chars, char_counter, coverage_stats,
     avg_order_95, avg_order_99, chars_95, chars_99, chars_95_in_ref, chars_95_out_ref,
-    chars_99_in_ref, chars_99_out_ref, extra_char_types, difficulty_score, stars, rare_analysis
+    chars_99_in_ref, chars_99_out_ref, extra_char_types, difficulty_score, stars, rare_analysis,
+    tool_version=None
 ):
     """
     准备上传数据
@@ -408,42 +414,228 @@ def prepare_upload_data(
         'file_name': selected_file,
         'total_chars': total_chars,
         'rare_char_types': rare_analysis['rare_type_count'],
-        'rare_char_ratio': round(rare_analysis['rare_char_ratio'] * 100, 2)
+        'rare_char_ratio': round(rare_analysis['rare_char_ratio'] * 100, 2),
+        'tool_version': tool_version
     }
+
+
+def load_existing_books(conn):
+    """
+    【批量优化】一次性加载所有已存在的书籍名称
+
+    Args:
+        conn: 数据库连接
+
+    Returns:
+        dict: {(book_name, author): book_id} 已存在书籍的映射
+    """
+    try:
+        cursor = conn.cursor()
+        sql = "SELECT id, book_name, author FROM book_difficulty"
+        cursor.execute(sql)
+        results = cursor.fetchall()
+        cursor.close()
+
+        # 构建映射：(书名, 作者) -> ID
+        existing_books = {}
+        for book_id, book_name, author in results:
+            key = (book_name, author if author else None)
+            existing_books[key] = book_id
+
+        return existing_books
+    except Exception as e:
+        print(f"⚠ 加载已存在书籍列表失败: {e}")
+        return {}
+
+
+def batch_insert_books(conn, data_list):
+    """
+    【批量优化】批量插入多条书籍记录
+
+    Args:
+        conn: 数据库连接
+        data_list: 统计数据字典列表
+
+    Returns:
+        int: 成功插入的记录数
+    """
+    if not data_list:
+        return 0
+
+    try:
+        cursor = conn.cursor()
+
+        sql = """
+        INSERT INTO book_difficulty (
+            book_name, author, char_types, char_types_in_1500, char_types_out_1500,
+            coverage_500, coverage_1000, coverage_1500,
+            avg_order_95, avg_order_99,
+            chars_95, chars_99,
+            chars_95_in_1500, chars_95_out_1500,
+            chars_99_in_1500, chars_99_out_1500,
+            difficulty_score, star_level,
+            file_name, total_chars,
+            rare_char_types, rare_char_ratio,
+            tool_version
+        ) VALUES (
+            %s, %s, %s, %s, %s,
+            %s, %s, %s,
+            %s, %s,
+            %s, %s,
+            %s, %s,
+            %s, %s,
+            %s, %s,
+            %s, %s,
+            %s, %s,
+            %s
+        )
+        """
+
+        # 准备批量数据
+        values_list = []
+        for data in data_list:
+            values = (
+                data['book_name'], data['author'], data['char_types'],
+                data['char_types_in_1500'], data['char_types_out_1500'],
+                data['coverage_500'], data['coverage_1000'], data['coverage_1500'],
+                data['avg_order_95'], data['avg_order_99'],
+                data['chars_95'], data['chars_99'],
+                data['chars_95_in_1500'], data['chars_95_out_1500'],
+                data['chars_99_in_1500'], data['chars_99_out_1500'],
+                data['difficulty_score'], data['star_level'],
+                data['file_name'], data['total_chars'],
+                data['rare_char_types'], data['rare_char_ratio'],
+                data['tool_version']
+            )
+            values_list.append(values)
+
+        # 批量执行
+        cursor.executemany(sql, values_list)
+        conn.commit()
+
+        affected_rows = cursor.rowcount
+        cursor.close()
+
+        return affected_rows
+
+    except Exception as e:
+        print(f"  ✗ 批量插入失败: {e}")
+        conn.rollback()
+        return 0
+
+
+def batch_update_books(conn, data_list):
+    """
+    【批量优化】批量更新多条书籍记录
+
+    Args:
+        conn: 数据库连接
+        data_list: 统计数据字典列表
+
+    Returns:
+        int: 成功更新的记录数
+    """
+    if not data_list:
+        return 0
+
+    try:
+        cursor = conn.cursor()
+
+        sql = """
+        UPDATE book_difficulty SET
+            char_types = %s,
+            char_types_in_1500 = %s,
+            char_types_out_1500 = %s,
+            coverage_500 = %s,
+            coverage_1000 = %s,
+            coverage_1500 = %s,
+            avg_order_95 = %s,
+            avg_order_99 = %s,
+            chars_95 = %s,
+            chars_99 = %s,
+            chars_95_in_1500 = %s,
+            chars_95_out_1500 = %s,
+            chars_99_in_1500 = %s,
+            chars_99_out_1500 = %s,
+            difficulty_score = %s,
+            star_level = %s,
+            file_name = %s,
+            total_chars = %s,
+            rare_char_types = %s,
+            rare_char_ratio = %s,
+            tool_version = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE book_name = %s AND (author = %s OR (author IS NULL AND %s IS NULL))
+        """
+
+        # 准备批量数据
+        values_list = []
+        for data in data_list:
+            values = (
+                data['char_types'], data['char_types_in_1500'], data['char_types_out_1500'],
+                data['coverage_500'], data['coverage_1000'], data['coverage_1500'],
+                data['avg_order_95'], data['avg_order_99'],
+                data['chars_95'], data['chars_99'],
+                data['chars_95_in_1500'], data['chars_95_out_1500'],
+                data['chars_99_in_1500'], data['chars_99_out_1500'],
+                data['difficulty_score'], data['star_level'],
+                data['file_name'], data['total_chars'],
+                data['rare_char_types'], data['rare_char_ratio'],
+                data['tool_version'],
+                data['book_name'], data['author'], data['author']
+            )
+            values_list.append(values)
+
+        # 批量执行
+        cursor.executemany(sql, values_list)
+        conn.commit()
+
+        affected_rows = cursor.rowcount
+        cursor.close()
+
+        return affected_rows
+
+    except Exception as e:
+        print(f"  ✗ 批量更新失败: {e}")
+        conn.rollback()
+        return 0
 
 
 def handle_database_upload(
     selected_file, total_chars, char_counter, coverage_stats,
     avg_order_95, avg_order_99, chars_95, chars_99, chars_95_in_ref, chars_95_out_ref,
     chars_99_in_ref, chars_99_out_ref, extra_char_types, difficulty_score, stars, rare_analysis,
-    batch_mode=False, db_conn=None, db_config=None
+    tool_version=None, batch_mode=False, db_conn=None, db_config=None, existing_books=None
 ):
     """
     处理数据库上传流程
 
     Args:
+        tool_version: 工具版本号
         batch_mode: 是否批量模式（True=自动处理，False=允许用户确认）
         db_conn: 复用的数据库连接（批量模式用）
         db_config: 数据库配置（批量模式用）
+        existing_books: 【批量优化】已存在书籍的缓存 {(book_name, author): book_id}
 
     Returns:
-        tuple: (bool, conn) 上传成功状态和数据库连接
+        批量模式: (success, conn, prepared_data, is_update)
+        单文件模式: (success, conn)
     """
     # 加载配置（如果没有传入）
     if db_config is None:
         db_config = load_db_config()
         if not db_config:
-            return False, None
+            return False, None, None, False if batch_mode else (False, None)
 
     # 自动检测配置有效性（检查是否仍为模板占位符）
     if not is_db_config_valid(db_config):
-        return False, None
+        return False, None, None, False if batch_mode else (False, None)
 
     # 建立数据库连接（如果没有传入）
     if db_conn is None:
         success, db_conn = check_db_connection(db_config)
         if not success:
-            return False, None
+            return False, None, None, False if batch_mode else (False, None)
         need_close = True  # 标记需要关闭连接
     else:
         need_close = False  # 复用连接，不关闭
@@ -455,7 +647,8 @@ def handle_database_upload(
     if not book_name or len(book_name.strip()) == 0:
         if not batch_mode:
             print(f"\n⚠ 无法解析书名，跳过数据库上传")
-        return False, db_conn if not need_close else None
+        ret_conn = db_conn if not need_close else None
+        return (False, ret_conn, None, False) if batch_mode else (False, ret_conn)
 
     # 检查书名中是否包含中文字符
     has_chinese = any('\u4e00' <= char <= '\u9fff' for char in book_name)
@@ -464,7 +657,8 @@ def handle_database_upload(
     if not has_chinese:
         if batch_mode:
             # 批量模式：直接跳过（可能是英文书或解析错误）
-            return False, db_conn if not need_close else None
+            ret_conn = db_conn if not need_close else None
+            return False, ret_conn, None, False
         else:
             # 单文件模式：提示用户，给予手动输入机会
             print(f"\n⚠ 书名中没有中文字符: {book_name}")
@@ -482,13 +676,19 @@ def handle_database_upload(
                 return False, None
             author = input("请输入作者（留空跳过）: ").strip() or None
 
-    # 查重
-    book_exists = check_book_exists(db_conn, book_name, author)
+    # 【批量优化】查重：使用缓存或查询数据库
+    if batch_mode and existing_books is not None:
+        # 批量模式：使用缓存
+        book_key = (book_name, author if author else None)
+        book_exists = book_key in existing_books
+    else:
+        # 单文件模式或无缓存：查询数据库
+        book_exists = check_book_exists(db_conn, book_name, author)
 
     if book_exists:
         if batch_mode:
-            # 批量模式：跳过已存在的记录
-            return False, db_conn if not need_close else None
+            # 批量模式：自动覆盖更新已存在的记录（静默更新）
+            pass  # 继续执行，后面会返回待更新数据
         else:
             # 单文件模式：询问是否覆盖
             print(f"\n⚠ 数据库中已存在: {book_name}" + (f" ({author})" if author else ""))
@@ -542,18 +742,25 @@ def handle_database_upload(
     data = prepare_upload_data(
         book_name, author, selected_file, total_chars, char_counter, coverage_stats,
         avg_order_95, avg_order_99, chars_95, chars_99, chars_95_in_ref, chars_95_out_ref,
-        chars_99_in_ref, chars_99_out_ref, extra_char_types, difficulty_score, stars, rare_analysis
+        chars_99_in_ref, chars_99_out_ref, extra_char_types, difficulty_score, stars, rare_analysis,
+        tool_version=tool_version
     )
 
     # 检查字数是否达到最低要求（300字）
     if total_chars < 300:
         if not batch_mode:
             print(f"\n⚠ 字数过少（{total_chars}字），需要至少300字才能上传数据库")
-        if need_close:
+        ret_conn = None if need_close else db_conn
+        if need_close and db_conn:
             db_conn.close()
-        return False, None if need_close else db_conn
+        return (False, ret_conn, None, False) if batch_mode else (False, ret_conn)
 
-    # 上传或更新
+    # 【批量优化】批量模式：只准备数据，不执行SQL
+    if batch_mode:
+        # 返回：(成功标记, 数据库连接, 准备好的数据, 是否更新)
+        return True, db_conn if not need_close else None, data, book_exists
+
+    # 单文件模式：立即执行SQL
     if book_exists:
         success = update_database(db_conn, data)
     else:
