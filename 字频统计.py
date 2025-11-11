@@ -431,10 +431,10 @@ def detect_encoding(file_path):
         print(f"  编码检测警告: {e}")
 
     # 方法2: 备用方法 - 按优先级尝试常见编码
-    # 先读取文件的前10KB内容用于检测
+    # 先读取文件的前100KB内容用于检测(增加到100KB,减少UTF-8字符被截断的概率)
     try:
         with open(file_path, 'rb') as f:
-            raw_data = f.read(10240)
+            raw_data = f.read(102400)  # 增加到100KB
     except:
         return None
 
