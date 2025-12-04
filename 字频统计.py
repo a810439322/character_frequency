@@ -3,7 +3,7 @@
 # author: 虎码新手2群-也无风雨也无晴
 
 # 工具版本号
-TOOL_VERSION = "1.2"
+TOOL_VERSION = "1.3"
 
 import os
 import sys
@@ -1041,7 +1041,7 @@ def difficulty_score_to_star_display(score):
 def feature_generic_ranking(field_name, field_display_name, title, asc_desc, desc_desc,
                             show_difficulty=False, value_formatter=None):
     """
-    通用排行榜功能（使用游标分页）
+    通用排行榜功能（使用OFFSET分页，支持跳页）
 
     Args:
         field_name: 数据库字段名（如 'chars_95', 'difficulty_score'）
@@ -1077,6 +1077,7 @@ def feature_generic_ranking(field_name, field_display_name, title, asc_desc, des
             print("无效输入，请输入1或2")
 
         is_ascending = (order_choice == '1')
+        order_direction = "ASC" if is_ascending else "DESC"
 
         # 获取总记录数
         cursor = conn.cursor()
@@ -1091,77 +1092,28 @@ def feature_generic_ranking(field_name, field_display_name, title, asc_desc, des
 
         # 分页参数
         page_size = 20
+        total_pages = (total_count + page_size - 1) // page_size
         current_page = 0
-        page_cache = []  # 缓存所有页面数据，支持双向翻页
 
-        def load_page(page_num):
-            """加载指定页码的数据"""
-            # 如果已经缓存，直接返回
-            if page_num < len(page_cache):
-                return page_cache[page_num]
-
-            # 需要从数据库加载新页
+        while True:
+            # 加载当前页数据
             cursor = conn.cursor()
+            offset = current_page * page_size
 
             # 构建SQL查询
             select_fields = f"id, book_name, author, {field_name}"
             if show_difficulty:
                 select_fields += ", difficulty_score, star_level"
 
-            if page_num == 0:
-                # 第一页
-                if is_ascending:
-                    sql = f"""
-                        SELECT {select_fields}
-                        FROM book_difficulty
-                        ORDER BY {field_name} ASC, id ASC
-                        LIMIT %s
-                    """
-                else:
-                    sql = f"""
-                        SELECT {select_fields}
-                        FROM book_difficulty
-                        ORDER BY {field_name} DESC, id DESC
-                        LIMIT %s
-                    """
-                cursor.execute(sql, (page_size,))
-            else:
-                # 后续页：使用上一页最后一条记录的游标
-                prev_page = page_cache[page_num - 1]
-                if not prev_page:
-                    return None
-                last_row = prev_page[-1]
-                last_id = last_row[0]
-                last_value = last_row[3]
-
-                if is_ascending:
-                    sql = f"""
-                        SELECT {select_fields}
-                        FROM book_difficulty
-                        WHERE {field_name} > %s OR ({field_name} = %s AND id > %s)
-                        ORDER BY {field_name} ASC, id ASC
-                        LIMIT %s
-                    """
-                else:
-                    sql = f"""
-                        SELECT {select_fields}
-                        FROM book_difficulty
-                        WHERE {field_name} < %s OR ({field_name} = %s AND id < %s)
-                        ORDER BY {field_name} DESC, id DESC
-                        LIMIT %s
-                    """
-                cursor.execute(sql, (last_value, last_value, last_id, page_size))
-
+            sql = f"""
+                SELECT {select_fields}
+                FROM book_difficulty
+                ORDER BY {field_name} {order_direction}, id {order_direction}
+                LIMIT %s OFFSET %s
+            """
+            cursor.execute(sql, (page_size, offset))
             results = cursor.fetchall()
             cursor.close()
-
-            # 缓存结果
-            page_cache.append(results if results else None)
-            return results
-
-        while True:
-            # 加载当前页数据
-            results = load_page(current_page)
 
             if not results:
                 if current_page == 0:
@@ -1169,32 +1121,23 @@ def feature_generic_ranking(field_name, field_display_name, title, asc_desc, des
                     break
                 else:
                     print("\n已经是最后一页了！")
-                    current_page -= 1  # 回退到上一页
+                    current_page -= 1
                     continue
 
-            # 显示结果 - 使用表格容器确保完美对齐
-            # 计算已显示的条数和剩余条数
-            shown_count = (current_page * page_size) + len(results)
-            remaining_count = total_count - shown_count
-
+            # 显示结果
             print("\n" + "=" * 70)
-            print(f"第 {current_page + 1} 页（本页 {len(results)} 条 | 总 {total_count} 条 | 剩余 {remaining_count} 条）")
+            print(f"共 {total_pages} 页 | 第 {current_page + 1} 页（本页 {len(results)} 条 | 总 {total_count} 条）")
             print("=" * 70)
 
             # 根据是否显示难度调整表格列
             if show_difficulty:
-                # 如果是难度排行榜，列顺序为：序号 | 书名 | 难度星级 | 难度分值
                 if field_name == 'difficulty_score':
-                    # 序号6 + 书名48 + 难度星级24 + 难度分值10
                     headers = ['序号', '书名', '难度星级', field_display_name]
                     col_widths = [6, 48, 24, 10]
                 else:
-                    # 其他排行榜：序号 | 书名 | 字段值 | 难度星级
-                    # 序号6 + 书名40 + 字段值12 + 难度星级24
                     headers = ['序号', '书名', field_display_name, '难度星级']
                     col_widths = [6, 40, 12, 24]
             else:
-                # 序号6 + 书名52 + 字段值20
                 headers = ['序号', '书名', field_display_name]
                 col_widths = [6, 52, 20]
 
@@ -1209,23 +1152,21 @@ def feature_generic_ranking(field_name, field_display_name, title, asc_desc, des
                 else:
                     formatted_value = str(field_value) if field_value is not None else 'N/A'
 
+                # 计算全局序号
+                global_idx = current_page * page_size + idx
+
                 if show_difficulty:
                     score, stars = row[4], row[5]
-                    # 转换星级显示（如果数据库存的是旧格式emoji⭐，重新计算）
                     if '⭐' in stars:
                         stars = difficulty_score_to_star_display(score)
 
-                    # 根据field_name调整列顺序
                     if field_name == 'difficulty_score':
-                        # 难度排行榜：序号 | 书名 | 难度星级 | 难度分值
-                        table.add_row(str(idx), book_name, stars, formatted_value)
+                        table.add_row(str(global_idx), book_name, stars, formatted_value)
                     else:
-                        # 其他排行榜：序号 | 书名 | 字段值 | 难度星级
-                        table.add_row(str(idx), book_name, formatted_value, stars)
+                        table.add_row(str(global_idx), book_name, formatted_value, stars)
                 else:
-                    table.add_row(str(idx), book_name, formatted_value)
+                    table.add_row(str(global_idx), book_name, formatted_value)
 
-            # 格式化并输出表格
             print(table.format())
 
             # 翻页提示
@@ -1236,28 +1177,30 @@ def feature_generic_ranking(field_name, field_display_name, title, asc_desc, des
             tips = []
             if current_page > 0:
                 tips.append("- 上一页")
-
-            # 检查是否有下一页（尝试预加载）
-            if current_page + 1 < len(page_cache):
-                # 已缓存下一页
-                if page_cache[current_page + 1]:
-                    tips.append("= 下一页")
-            elif len(results) == page_size:
-                # 当前页满，可能有下一页
+            if current_page < total_pages - 1:
                 tips.append("= 下一页")
+            tips.append("输入页码跳转")
+            tips.append("回车返回")
 
-            if tips:
-                print("  " + " | ".join(tips) + " | 回车返回")
-                choice = input("请选择: ").strip()
-            else:
-                choice = input("\n按回车键返回主菜单...")
+            print("  " + " | ".join(tips))
+            choice = input("请选择: ").strip()
 
             if choice == '-' and current_page > 0:
                 current_page -= 1
-            elif choice == '=':
+            elif choice == '=' and current_page < total_pages - 1:
                 current_page += 1
-            else:
+            elif choice == '':
                 break
+            else:
+                # 尝试解析为页码
+                try:
+                    page_num = int(choice)
+                    if 1 <= page_num <= total_pages:
+                        current_page = page_num - 1
+                    else:
+                        print(f"页码超出范围，请输入 1-{total_pages} 之间的数字！")
+                except ValueError:
+                    pass
 
     except Exception as e:
         print(f"\n查询出错: {e}")
@@ -1273,15 +1216,157 @@ def feature_generic_ranking(field_name, field_display_name, title, asc_desc, des
 
 def feature_select_by_star():
     """功能2: 按分数筛选书籍"""
-    feature_generic_ranking(
-        field_name='difficulty_score',
-        field_display_name='难度分值',
-        title='按分数筛选书籍',
-        asc_desc='从简单到困难',
-        desc_desc='从困难到简单',
-        show_difficulty=True,
-        value_formatter=lambda x: f"{x:.1f}"
-    )
+    print("\n" + "=" * 70)
+    print("【按分数筛选书籍】")
+    print("=" * 70)
+
+    # 获取数据库连接
+    conn = get_db_connection()
+    if not conn:
+        input("\n按回车键返回主菜单...")
+        return
+
+    try:
+        # 用户输入分数范围
+        print("\n请输入难度分数范围（0-100分）：")
+        print("提示：分数越低越简单，分数越高越难")
+        print()
+
+        # 输入最低分
+        while True:
+            min_score_input = input("最低分数（直接回车默认0）: ").strip()
+            if min_score_input == '':
+                min_score = 0
+                break
+            try:
+                min_score = float(min_score_input)
+                if 0 <= min_score <= 100:
+                    break
+                print("请输入0-100之间的数字！")
+            except ValueError:
+                print("请输入有效的数字！")
+
+        # 输入最高分
+        while True:
+            max_score_input = input("最高分数（直接回车默认100）: ").strip()
+            if max_score_input == '':
+                max_score = 100
+                break
+            try:
+                max_score = float(max_score_input)
+                if 0 <= max_score <= 100:
+                    if max_score >= min_score:
+                        break
+                    print(f"最高分必须大于等于最低分（{min_score}）！")
+                else:
+                    print("请输入0-100之间的数字！")
+            except ValueError:
+                print("请输入有效的数字！")
+
+        print(f"\n正在筛选难度分数在 {min_score:.1f} - {max_score:.1f} 之间的书籍...")
+
+        # 获取总记录数
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM book_difficulty WHERE difficulty_score >= %s AND difficulty_score <= %s",
+            (min_score, max_score)
+        )
+        total_count = cursor.fetchone()[0]
+        cursor.close()
+
+        if total_count == 0:
+            print(f"\n未找到难度分数在 {min_score:.1f} - {max_score:.1f} 之间的书籍！")
+            input("\n按回车键返回主菜单...")
+            return
+
+        # 分页参数
+        page_size = 20
+        total_pages = (total_count + page_size - 1) // page_size
+        current_page = 0
+
+        while True:
+            # 加载当前页数据
+            cursor = conn.cursor()
+            offset = current_page * page_size
+            sql = """
+                SELECT id, book_name, author, difficulty_score, star_level
+                FROM book_difficulty
+                WHERE difficulty_score >= %s AND difficulty_score <= %s
+                ORDER BY difficulty_score ASC, id ASC
+                LIMIT %s OFFSET %s
+            """
+            cursor.execute(sql, (min_score, max_score, page_size, offset))
+            results = cursor.fetchall()
+            cursor.close()
+
+            if not results:
+                if current_page == 0:
+                    print("\n暂无数据！")
+                    break
+                else:
+                    print("\n已经是最后一页了！")
+                    current_page -= 1
+                    continue
+
+            # 显示结果
+            print("\n" + "=" * 70)
+            print(f"共 {total_pages} 页 | 第 {current_page + 1} 页（筛选条件：{min_score:.1f} - {max_score:.1f} 分 | 共 {total_count} 条）")
+            print("=" * 70)
+
+            # 表格格式
+            headers = ['序号', '书名', '难度星级', '难度分值']
+            col_widths = [6, 48, 24, 10]
+            table = TableFormatter(headers, col_widths)
+
+            for idx, row in enumerate(results, start=1):
+                book_id, book_name, author, score, stars = row
+
+                # 转换星级显示
+                if '⭐' in stars:
+                    stars = difficulty_score_to_star_display(score)
+
+                table.add_row(str(current_page * page_size + idx), book_name, stars, f"{score:.1f}")
+
+            print(table.format())
+
+            # 翻页提示
+            total_width = sum(col_widths) + len(col_widths) - 1
+            print("-" * total_width)
+
+            tips = []
+            if current_page > 0:
+                tips.append("- 上一页")
+            if current_page < total_pages - 1:
+                tips.append("= 下一页")
+            tips.append("输入页码跳转")
+            tips.append("回车返回")
+
+            print("  " + " | ".join(tips))
+            choice = input("请选择: ").strip()
+
+            if choice == '-' and current_page > 0:
+                current_page -= 1
+            elif choice == '=' and current_page < total_pages - 1:
+                current_page += 1
+            elif choice == '':
+                break
+            else:
+                # 尝试解析为页码
+                try:
+                    page_num = int(choice)
+                    if 1 <= page_num <= total_pages:
+                        current_page = page_num - 1
+                    else:
+                        print(f"页码超出范围，请输入 1-{total_pages} 之间的数字！")
+                except ValueError:
+                    pass
+
+    except Exception as e:
+        print(f"\n查询出错: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        conn.close()
 
 
 def feature_difficulty_ranking():
@@ -1383,11 +1468,18 @@ def feature_search_book():
             input("\n按回车键返回主菜单...")
             return
 
-        # 模糊搜索
+        # 模糊搜索 - 获取所有字段
         cursor = conn.cursor()
         sql = """
             SELECT id, book_name, author, difficulty_score, star_level,
-                   chars_95, chars_99, avg_order_95, avg_order_99, char_types
+                   char_types, char_types_in_1500, char_types_out_1500,
+                   coverage_500, coverage_1000, coverage_1500,
+                   avg_order_95, avg_order_99,
+                   chars_95, chars_99,
+                   chars_95_in_1500, chars_95_out_1500,
+                   chars_99_in_1500, chars_99_out_1500,
+                   total_chars, rare_char_types, rare_char_ratio,
+                   file_name, tool_version
             FROM book_difficulty
             WHERE book_name LIKE %s
             ORDER BY difficulty_score ASC
@@ -1401,37 +1493,48 @@ def feature_search_book():
             input("\n按回车键返回主菜单...")
             return
 
-        # 显示搜索结果
-        print("\n" + "=" * 70)
-        print(f"搜索到 {len(results)} 本书籍（关键词：{keyword}）")
-        print("=" * 70 + "\n")
+        # 显示搜索结果列表（简洁版）
+        while True:
+            print("\n" + "=" * 70)
+            print(f"搜索到 {len(results)} 本书籍（关键词：{keyword}）")
+            print("=" * 70)
 
-        for idx, row in enumerate(results, start=1):
-            book_id, book_name, author, score, stars, chars_95, chars_99, avg_order_95, avg_order_99, char_types = row
+            # 使用表格格式显示
+            headers = ['序号', '书名', '难度星级', '难度分值']
+            col_widths = [6, 48, 24, 10]
+            table = TableFormatter(headers, col_widths)
 
-            # 转换星级显示（如果数据库存的是旧格式emoji⭐，重新计算）
-            if '⭐' in stars:
-                stars = difficulty_score_to_star_display(score)
+            for idx, row in enumerate(results, start=1):
+                book_id, book_name, author, score, stars = row[:5]
 
-            print(f"{idx}. {book_name}")
-            if author:
-                print(f"   作者: {author}")
-            print(f"   难度: {stars}  ({score:.1f}分)")
-            print(f"   95%字数: {chars_95}  |  99%字数: {chars_99}  |  字种数: {char_types}")
+                # 转换星级显示
+                if '⭐' in stars:
+                    stars = difficulty_score_to_star_display(score)
 
-            # 显示平均字序（如果有数据）
-            order_info = []
-            if avg_order_95 is not None:
-                order_info.append(f"95%字序: {avg_order_95:.1f}")
-            if avg_order_99 is not None:
-                order_info.append(f"99%字序: {avg_order_99:.1f}")
-            if order_info:
-                print(f"   {' | '.join(order_info)}")
+                table.add_row(str(idx), book_name, stars, f"{score:.1f}")
 
-            print(f"   字种数: {char_types}")
-            print()
+            print(table.format())
 
-        input("\n按回车键返回主菜单...")
+            # 提示用户选择
+            total_width = sum(col_widths) + len(col_widths) - 1
+            print("-" * total_width)
+            print("  输入序号查看详情 | 回车返回主菜单")
+
+            choice = input("请选择: ").strip()
+
+            if choice == '':
+                break
+
+            # 尝试解析为序号
+            try:
+                idx = int(choice)
+                if 1 <= idx <= len(results):
+                    # 显示详细信息
+                    show_book_detail(results[idx - 1])
+                else:
+                    print(f"序号超出范围，请输入 1-{len(results)} 之间的数字！")
+            except ValueError:
+                print("请输入有效的数字！")
 
     except Exception as e:
         print(f"\n搜索出错: {e}")
@@ -1440,6 +1543,111 @@ def feature_search_book():
         input("\n按回车键返回主菜单...")
     finally:
         conn.close()
+
+
+def show_book_detail(row):
+    """显示书籍详细信息"""
+    # 解析数据
+    (book_id, book_name, author, difficulty_score, star_level,
+     char_types, char_types_in_1500, char_types_out_1500,
+     coverage_500, coverage_1000, coverage_1500,
+     avg_order_95, avg_order_99,
+     chars_95, chars_99,
+     chars_95_in_1500, chars_95_out_1500,
+     chars_99_in_1500, chars_99_out_1500,
+     total_chars, rare_char_types, rare_char_ratio,
+     file_name, tool_version) = row
+
+    # 转换星级显示
+    if '⭐' in star_level:
+        star_level = difficulty_score_to_star_display(difficulty_score)
+
+    print("\n" + "=" * 70)
+    print("【书籍详细信息】")
+    print("=" * 70)
+
+    # 基本信息
+    print(f"\n📖 书名：{book_name}")
+    if author:
+        print(f"   作者：{author}")
+    print(f"   文件名：{file_name}")
+    print(f"   总字符数：{total_chars:,}")
+
+    # 难度评估
+    print("\n" + "-" * 70)
+    print("【难度评估】")
+    print("-" * 70)
+    print(f"   难度星级：{star_level}")
+    print(f"   难度分值：{difficulty_score:.1f} / 100")
+
+    # 字种数分析
+    print("\n" + "-" * 70)
+    print("【字种数分析】")
+    print("-" * 70)
+    print(f"   总字种数：{char_types} 个")
+    if char_types_in_1500 is not None and char_types_out_1500 is not None:
+        print(f"   ├─ 前1500内：{char_types_in_1500} 个")
+        print(f"   └─ 前1500外：{char_types_out_1500} 个")
+
+    # 生僻字分析
+    if rare_char_types is not None:
+        print(f"\n   生僻字种数：{rare_char_types} 个", end="")
+        if rare_char_ratio is not None:
+            print(f"（占文本 {rare_char_ratio*100:.2f}%）")
+        else:
+            print()
+
+    # 覆盖率分析
+    print("\n" + "-" * 70)
+    print("【高频字覆盖率】")
+    print("-" * 70)
+    if coverage_500 is not None:
+        print(f"   前500字覆盖率：{coverage_500:.2f}%")
+    if coverage_1000 is not None:
+        print(f"   前1000字覆盖率：{coverage_1000:.2f}%")
+    if coverage_1500 is not None:
+        print(f"   前1500字覆盖率：{coverage_1500:.2f}%")
+
+    # 累积覆盖分析
+    print("\n" + "-" * 70)
+    print("【累积覆盖分析】")
+    print("-" * 70)
+
+    # 95%覆盖
+    if chars_95 is not None:
+        print(f"   95%覆盖所需字数：{chars_95} 个")
+        if chars_95_in_1500 is not None and chars_95_out_1500 is not None:
+            print(f"   ├─ 前1500内：{chars_95_in_1500} 个")
+            print(f"   └─ 前1500外：{chars_95_out_1500} 个")
+
+    # 99%覆盖
+    if chars_99 is not None:
+        print(f"\n   99%覆盖所需字数：{chars_99} 个")
+        if chars_99_in_1500 is not None and chars_99_out_1500 is not None:
+            print(f"   ├─ 前1500内：{chars_99_in_1500} 个")
+            print(f"   └─ 前1500外：{chars_99_out_1500} 个")
+
+    # 平均字序分析
+    print("\n" + "-" * 70)
+    print("【平均字序分析】（字序越小=越常用）")
+    print("-" * 70)
+    if avg_order_95 is not None:
+        print(f"   95%覆盖平均字序：{avg_order_95:.1f}")
+    else:
+        print(f"   95%覆盖平均字序：无数据")
+
+    if avg_order_99 is not None:
+        print(f"   99%覆盖平均字序：{avg_order_99:.1f}")
+    else:
+        print(f"   99%覆盖平均字序：无数据")
+
+    # 工具版本
+    if tool_version:
+        print("\n" + "-" * 70)
+        print(f"   统计工具版本：v{tool_version}")
+
+    print("\n" + "=" * 70)
+    input("\n按回车键返回搜索结果...")
 
 
 # ============================================================================
